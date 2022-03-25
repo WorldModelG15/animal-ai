@@ -5,3 +5,16 @@ animalai.egg-info/dependency_links.txt
 animalai.egg-info/not-zip-safe
 animalai.egg-info/requires.txt
 animalai.egg-info/top_level.txt
+animalai/envs/__init__.py
+animalai/envs/actions.py
+animalai/envs/braitenberg.py
+animalai/envs/environment.py
+animalai/envs/raycastparser.py
+animalai/envs/settings.py
+animalai/envs/gym/__init__.py
+animalai/envs/gym/environment.py
+animalai/envs/tests/__init__.py
+animalai/envs/tests/test_arena_config.py
+animalai/envs/tests/test_envs_aai.py
+animalai/train/__init__.py
+animalai/train/train.py
