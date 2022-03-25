@@ -25,6 +25,7 @@ def train_agent_single_config(configuration_file):
         useCamera=True,
         resolution=64,
         useRayCasts=False,
+        no_graphics=True,
         # raysPerSide=1,
         # rayMaxDegrees = 30,
     )
@@ -39,7 +40,7 @@ def train_agent_single_config(configuration_file):
     env = UnityToGymWrapper(
         aai_env, uint8_visual=True, allow_multiple_obs=False, flatten_branched=True
     )
-    env = OneHotAction(WrapPyTorch(env))
+    # env = OneHotAction(WrapPyTorch(env))
 
     print(env.action_space.shape)
     print(env.observation_space)
