@@ -1,4 +1,5 @@
 import uuid
+import random
 from typing import NamedTuple, Dict, Optional, List
 from mlagents_envs.environment import UnityEnvironment
 from mlagents_envs.rpc_communicator import UnityTimeOutException
@@ -9,9 +10,11 @@ from mlagents_envs.side_channel.engine_configuration_channel import (
     EngineConfigurationChannel,
 )
 
+
 class PlayTrain(NamedTuple):
     play: int
     train: int
+
 
 class AnimalAIEnvironment(UnityEnvironment):
     """Extends UnityEnvironment with options specific for AnimalAI
@@ -40,20 +43,21 @@ class AnimalAIEnvironment(UnityEnvironment):
         seed: int = 0,
         play: bool = False,
         arenas_configurations: str = "",
+        arenas_configurations_paths=None,
         inference: bool = False,
         useCamera: bool = True,
         resolution: int = None,
         grayscale: bool = False,
         useRayCasts: bool = False,
         raysPerSide: int = 2,
-        rayMaxDegrees: int = 60,       
-        decisionPeriod: int = 3, 
+        rayMaxDegrees: int = 60,
+        decisionPeriod: int = 3,
         side_channels: Optional[List[SideChannel]] = None,
         no_graphics: bool = False,
         use_YAML: bool = True,
         # captureFrameRate: int = 0,
         # targetFrameRate: int = 60,
-        ):
+    ):
 
         self.obsdict = {
             "camera": [],
@@ -64,15 +68,16 @@ class AnimalAIEnvironment(UnityEnvironment):
         }
         self.useCamera = useCamera
         self.useRayCasts = useRayCasts
-        args = self.executable_args( 
+        args = self.executable_args(
             play,
-            useCamera, 
-            resolution, 
-            grayscale, 
-            useRayCasts, 
-            raysPerSide, 
-            rayMaxDegrees, 
-            decisionPeriod)
+            useCamera,
+            resolution,
+            grayscale,
+            useRayCasts,
+            raysPerSide,
+            rayMaxDegrees,
+            decisionPeriod,
+        )
         self.play = play
         self.inference = inference
         self.timeout = 10 if play else 60
@@ -81,6 +86,8 @@ class AnimalAIEnvironment(UnityEnvironment):
         self.use_YAML = use_YAML
         # self.captureFrameRate = captureFrameRate
         # self.targetFrameRate = targetFrameRate
+
+        self.arenas_configurations_paths = arenas_configurations_paths
 
         self.configure_side_channels(self.side_channels)
 
@@ -139,29 +146,40 @@ class AnimalAIEnvironment(UnityEnvironment):
     def get_obs_dict(self, obs) -> Dict:
         """Parse the observation:
         input: the observation directly from AAI
-        output: a dictionary with keys: ["camera", "rays", "health", "velocity", "position"] """
+        output: a dictionary with keys: ["camera", "rays", "health", "velocity", "position"]"""
         intrinsicobs = 0
-        if(self.useCamera):
-            intrinsicobs = intrinsicobs+1
+        if self.useCamera:
+            intrinsicobs = intrinsicobs + 1
             self.obsdict["camera"] = obs[0][0]
-            if(self.useRayCasts):
-                intrinsicobs = intrinsicobs+1
+            if self.useRayCasts:
+                intrinsicobs = intrinsicobs + 1
                 self.obsdict["rays"] = obs[1][0]
-        elif(self.useRayCasts):
-            intrinsicobs = intrinsicobs+1
+        elif self.useRayCasts:
+            intrinsicobs = intrinsicobs + 1
             self.obsdict["rays"] = obs[0][0]
-        
+
         self.obsdict["health"] = obs[intrinsicobs][0][0]
         self.obsdict["velocity"] = obs[intrinsicobs][0][1:4]
         self.obsdict["position"] = obs[intrinsicobs][0][4:7]
         return self.obsdict
 
     def reset(self, arenas_configurations="") -> None:
-        if arenas_configurations != "":
+        if self.arenas_configurations_paths is not None:
+            task_random = random.randint(0, len(self.arenas_configurations_paths) - 1)
+            task_file = self.arenas_configurations_paths[task_random]
+            f = open(task_file, "r")
+            d = f.read()
+            f.close()
+            self.arenas_parameters_side_channel.send_raw_data(
+                bytearray(d, encoding="utf-8")
+            )
+        elif arenas_configurations != "":
             f = open(arenas_configurations, "r")
             d = f.read()
             f.close()
-            self.arenas_parameters_side_channel.send_raw_data(bytearray(d, encoding="utf-8"))
+            self.arenas_parameters_side_channel.send_raw_data(
+                bytearray(d, encoding="utf-8")
+            )
         try:
             super().reset()
         except UnityTimeOutException as timeoutException:

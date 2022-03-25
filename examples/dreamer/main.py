@@ -1,3 +1,4 @@
+from datetime import datetime
 import time
 import os
 import sys, random
@@ -9,7 +10,7 @@ import torch
 from models import Encoder, RSSM, ValueModel, ActionModel
 from agent import Agent
 from utils import ReplayBuffer, preprocess_obs, lambda_target
-from wrapper import WrapPyTorch, OneHotAction, DummyWrapper
+from wrapper import WrapPyTorch, OneHotAction, MaxAndSkipEnv
 from torch.utils.tensorboard import SummaryWriter
 import torch
 from torch.distributions.kl import kl_divergence
@@ -22,7 +23,7 @@ from animalai.envs.environment import AnimalAIEnvironment
 class Trainer:
     def __init__(self, env, device):
         # リプレイバッファの宣言
-        buffer_capacity = 200000  # Colabのメモリの都合上, 元の実装より小さめにとっています
+        buffer_capacity = 500000
         self.replay_buffer = ReplayBuffer(
             capacity=buffer_capacity,
             observation_shape=env.observation_space.shape,
@@ -36,14 +37,14 @@ class Trainer:
         self.state_dim = 30  # 確率的状態の次元
         self.rnn_hidden_dim = 200  # 決定的状態（RNNの隠れ状態）の次元
 
+        self.action_dim = env.action_space.shape[0]
+
         # 確率的状態の次元と決定的状態（RNNの隠れ状態）の次元は一致しなくて良い
         self.encoder = Encoder().to(device)
-        self.rssm = RSSM(
-            self.state_dim, env.action_space.shape[0], self.rnn_hidden_dim, device
-        )
+        self.rssm = RSSM(self.state_dim, self.action_dim, self.rnn_hidden_dim, device)
         self.value_model = ValueModel(self.state_dim, self.rnn_hidden_dim).to(device)
         self.action_model = ActionModel(
-            self.state_dim, self.rnn_hidden_dim, env.action_space.shape[0]
+            self.state_dim, self.rnn_hidden_dim, self.action_dim
         ).to(device)
 
         # オプティマイザの宣言
@@ -65,17 +66,24 @@ class Trainer:
             self.action_model.parameters(), lr=action_lr, eps=eps
         )
 
-        log_dir = "logs"
-        self.writer = SummaryWriter(log_dir)
+        self.log_dir = "runs/" + datetime.now().strftime("%Y%m%d%H%M%S")
+        if not os.path.exists(self.log_dir):
+            os.makedirs(self.log_dir, exist_ok=True)
+        self.writer = SummaryWriter(self.log_dir)
 
         # その他ハイパーパラメータ
         self.seed_episodes = 5  # 最初にランダム行動で探索するエピソード数
-        self.all_episodes = 100  # 学習全体のエピソード数（300ほどで, ある程度収束します）
+        self.all_episodes = 1000  # 学習全体のエピソード数
         self.test_interval = 10  # 何エピソードごとに探索ノイズなしのテストを行うか
-        self.model_save_interval = 20  # NNの重みを何エピソードごとに保存するか
-        self.collect_interval = 100  # 何回のNNの更新ごとに経験を集めるか（＝1エピソード経験を集めるごとに何回更新するか）
+        self.model_save_interval = 100  # NNの重みを何エピソードごとに保存するか
+        self.collect_interval = 50  # 何回のNNの更新ごとに経験を集めるか（＝1エピソード経験を集めるごとに何回更新するか）
 
         self.action_noise_var = 0.3  # 探索ノイズの強さ
+
+        # epsilon greedy
+        self.train_noise = 0.4
+        self.expl_min = 0.05
+        self.expl_decay = 7000.0
 
         self.batch_size = 50
         self.chunk_length = 50  # 1回の更新で用いる系列の長さ
@@ -83,12 +91,26 @@ class Trainer:
             15  # Actor-Criticの更新のために, Dreamerで何ステップ先までの想像上の軌道を生成するか
         )
 
-        self.gamma = 0.9  # 割引率
+        self.gamma = 0.99  # 割引率
         self.lambda_ = 0.95  # λ-returnのパラメータ
         self.clip_grad_norm = 100  # gradient clippingの値
         self.free_nats = (
             3  # KL誤差（RSSMのTransitionModelにおけるpriorとposteriorの間の誤差）がこの値以下の場合, 無視する
         )
+
+    def _add_exploration(self, action, iter):
+        """
+        たまにランダム行動（Epsilon-greedy）
+        """
+        expl_amount = self.train_noise
+        expl_amount = expl_amount - iter / self.expl_decay
+        expl_amount = max(self.expl_min, expl_amount)
+
+        if np.random.uniform(0, 1) < expl_amount:
+            index = np.random.randint(0, self.action_dim, action.shape[:-1])
+            action = np.zeros_like(action)
+            action[index] = 1
+        return action
 
     def train(self):
         for episode in range(self.seed_episodes):
@@ -99,6 +121,8 @@ class Trainer:
                 next_obs, reward, done, _ = self.env.step(action)
                 self.replay_buffer.push(obs, action, reward, done)
                 obs = next_obs
+
+        steps = 0
 
         for episode in range(self.seed_episodes, self.all_episodes):
             # -----------------------------
@@ -113,10 +137,13 @@ class Trainer:
             total_reward = 0
             while not done:
                 action = policy(obs)
-                # 探索のためにガウス分布に従うノイズを加える(explaration noise)
-                action += np.random.normal(
-                    0, np.sqrt(self.action_noise_var), self.env.action_space.shape[0]
-                )
+                # epsilon-greedy
+                action = self._add_exploration(action, steps)
+
+                # # 探索のためにガウス分布に従うノイズを加える(explaration noise)
+                # action += np.random.normal(
+                #     0, np.sqrt(self.action_noise_var), self.env.action_space.shape[0]
+                # )
                 next_obs, reward, done, _ = self.env.step(action)
 
                 # リプレイバッファに観測, 行動, 報酬, doneを格納
@@ -124,6 +151,7 @@ class Trainer:
 
                 obs = next_obs
                 total_reward += reward
+                steps += 1
 
             # 訓練時の報酬と経過時間をログとして表示
             self.writer.add_scalar("total reward at train", total_reward, episode)
@@ -401,29 +429,29 @@ if __name__ == "__main__":
     if len(sys.argv) > 1:
         configuration_file = sys.argv[1]
     else:
-        competition_folder = "../configs/competition/"
-        configuration_files = os.listdir(competition_folder)
-        configuration_random = random.randint(0, len(configuration_files))
-        configuration_file = (
-            competition_folder + configuration_files[configuration_random]
-        )
+        tasks_folder = "/root/mnt/animalai/animal-ai/examples/tasks/"
+        configuration_files = os.listdir(tasks_folder)
+        configuration_file_paths = []
+        for file_name in configuration_files:
+            configuration_file_paths.append(tasks_folder + file_name)
     aai_env = AnimalAIEnvironment(
         seed=123,
-        file_name="../env/AnimalAI",
-        arenas_configurations=configuration_file,
+        file_name="/root/mnt/animalai/animal-ai/env/AnimalAI",
+        arenas_configurations_paths=configuration_file_paths,
         play=False,
         base_port=5000,
         inference=False,
         useCamera=True,
         resolution=64,
         useRayCasts=False,
+        no_graphics=True,
         # raysPerSide=1,
         # rayMaxDegrees = 30,
     )
     env = UnityToGymWrapper(
         aai_env, uint8_visual=True, allow_multiple_obs=False, flatten_branched=True
     )
-    env = OneHotAction(DummyWrapper(env))
+    env = OneHotAction(MaxAndSkipEnv(env))
     device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
     trainer = Trainer(env, device)
     trainer.train()
