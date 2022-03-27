@@ -423,8 +423,37 @@ class Trainer:
                 )
 
         self.writer.close()
+    
+    # 学習済みモデルのテストを行う
+    def test(self, saved_param_dir, episodes):
+        self.encoder.load_state_dict(torch.load(os.path.join(saved_param_dir, "encoder.pth")))
+        self.rssm.transition.load_state_dict(torch.load(os.path.join(saved_param_dir, "rssm.pth")))
+        self.rssm.observation.load_state_dict(torch.load(os.path.join(saved_param_dir, "obs_model.pth")))
+        self.rssm.reward.load_state_dict(torch.load(os.path.join(saved_param_dir, "reward_model.pth")))
+        self.value_model.load_state_dict(torch.load(os.path.join(saved_param_dir, "value_model.pth")))
+        self.action_model.load_state_dict(torch.load(os.path.join(saved_param_dir, "action_model.pth")))
+        policy = Agent(self.encoder, self.rssm.transition, self.action_model)
+        epi_total_reward = 0
+        for i in range(episodes):
+            start = time.time()
+            obs = self.env.reset()
+            done = False
+            total_reward = 0
+            while not done:
+                action = policy(obs, training=False)
+                obs, reward, done, _ = self.env.step(action)
+                total_reward += reward
+            epi_total_reward += total_reward
+            #self.writer.add_scalar("total reward at test", total_reward, episode)
+            print(f"total reward at episode {i+1} is {total_reward}")
+            print("elasped time for test: %.2fs" % (time.time() - start))
+        print(f"average reward: {epi_total_reward / episodes}")
 
 
+
+class Tester:
+    def __init__(self, param_path_dict) -> None:
+        self.encoder = 
 if __name__ == "__main__":
     if len(sys.argv) > 1:
         configuration_file = sys.argv[1]
