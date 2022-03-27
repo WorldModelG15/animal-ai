@@ -451,9 +451,7 @@ class Trainer:
 
 
 
-class Tester:
-    def __init__(self, param_path_dict) -> None:
-        self.encoder = 
+
 if __name__ == "__main__":
     if len(sys.argv) > 1:
         configuration_file = sys.argv[1]
