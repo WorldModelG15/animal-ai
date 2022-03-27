@@ -1,18 +1,18 @@
+from cgi import test
 from datetime import datetime
 import time
 import os
 import sys, random
 
 import numpy as np
-
+from PIL import Image
 
 import torch
 from models import Encoder, RSSM, ValueModel, ActionModel
 from agent import Agent
 from utils import ReplayBuffer, preprocess_obs, lambda_target
-from wrapper import WrapPyTorch, OneHotAction, MaxAndSkipEnv
+from wrapper import WrapPyTorch, OneHotAction, MaxAndSkipEnv, DummyWrapper
 from torch.utils.tensorboard import SummaryWriter
-import torch
 from torch.distributions.kl import kl_divergence
 from torch.nn import functional as F
 from torch.nn.utils import clip_grad_norm_
@@ -21,7 +21,7 @@ from animalai.envs.environment import AnimalAIEnvironment
 
 
 class Trainer:
-    def __init__(self, env, device):
+    def __init__(self, env, device, train=True):
         # リプレイバッファの宣言
         buffer_capacity = 500000
         self.replay_buffer = ReplayBuffer(
@@ -67,15 +67,24 @@ class Trainer:
         )
 
         self.log_dir = "runs/" + datetime.now().strftime("%Y%m%d%H%M%S")
-        if not os.path.exists(self.log_dir):
+        if train and not os.path.exists(self.log_dir):
             os.makedirs(self.log_dir, exist_ok=True)
+
+        self.model_save_dir = "models/" + datetime.now().strftime("%Y%m%d%H%M%S")
+        if train and not os.path.exists(self.model_save_dir):
+            os.makedirs(self.model_save_dir, exist_ok=True)
+
+        self.gif_dir = "gif/"
+        if not os.path.exists(self.gif_dir):
+            os.makedirs(self.gif_dir, exist_ok=True)
+
         self.writer = SummaryWriter(self.log_dir)
 
         # その他ハイパーパラメータ
         self.seed_episodes = 5  # 最初にランダム行動で探索するエピソード数
         self.all_episodes = 1000  # 学習全体のエピソード数
         self.test_interval = 10  # 何エピソードごとに探索ノイズなしのテストを行うか
-        self.model_save_interval = 100  # NNの重みを何エピソードごとに保存するか
+        self.model_save_interval = 250  # NNの重みを何エピソードごとに保存するか
         self.collect_interval = 50  # 何回のNNの更新ごとに経験を集めるか（＝1エピソード経験を集めるごとに何回更新するか）
 
         self.action_noise_var = 0.3  # 探索ノイズの強さ
@@ -394,7 +403,7 @@ class Trainer:
             if (episode + 1) % self.model_save_interval == 0:
                 # 定期的に学習済みモデルのパラメータを保存する
                 model_log_dir = os.path.join(
-                    self.log_dir, "episode_%04d" % (episode + 1)
+                    self.model_save_dir, "episode_%04d" % (episode + 1)
                 )
                 os.makedirs(model_log_dir)
                 torch.save(
@@ -424,6 +433,41 @@ class Trainer:
 
         self.writer.close()
 
+    def load_models(self, model_dir):
+        self.encoder.load_state_dict(torch.load(os.path.join(model_dir, "encoder.pth")))
+        self.rssm.transition.load_state_dict(
+            torch.load(os.path.join(model_dir, "rssm.pth"))
+        )
+        self.rssm.observation.load_state_dict(
+            torch.load(os.path.join(model_dir, "obs_model.pth"))
+        )
+        self.action_model.load_state_dict(
+            torch.load(os.path.join(model_dir, "action_model.pth"))
+        )
+
+    def view(self, test_count):
+        policy = Agent(self.encoder, self.rssm.transition, self.action_model)
+
+        for i in range(test_count):
+            obs = self.env.reset()
+            done = False
+            total_reward = 0
+            frames = [Image.fromarray(obs)]
+
+            while not done:
+                action = policy(obs, training=False)
+                obs, reward, done, _ = self.env.step(action)
+                total_reward += reward
+                frames.append(Image.fromarray(obs))
+
+            print("Total Reward:", total_reward)
+            frames[0].save(
+                os.path.join(self.gif_dir, "test" + str(i) + ".gif"),
+                save_all=True,
+                append_images=frames[1:],
+                duration=40,
+            )
+
 
 if __name__ == "__main__":
     if len(sys.argv) > 1:
@@ -451,7 +495,8 @@ if __name__ == "__main__":
     env = UnityToGymWrapper(
         aai_env, uint8_visual=True, allow_multiple_obs=False, flatten_branched=True
     )
-    env = OneHotAction(MaxAndSkipEnv(env))
+    # env = OneHotAction(MaxAndSkipEnv(env))
+    env = OneHotAction(DummyWrapper(env))
     device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
     trainer = Trainer(env, device)
     trainer.train()
