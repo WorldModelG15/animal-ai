@@ -1,8 +1,9 @@
 from datetime import datetime
+from distutils.command.config import config
 import time
 import os
 import sys, random
-
+import argparse
 import numpy as np
 
 
@@ -425,13 +426,13 @@ class Trainer:
         self.writer.close()
     
     # 学習済みモデルのテストを行う
-    def test(self, saved_param_dir, episodes):
-        self.encoder.load_state_dict(torch.load(os.path.join(saved_param_dir, "encoder.pth")))
-        self.rssm.transition.load_state_dict(torch.load(os.path.join(saved_param_dir, "rssm.pth")))
-        self.rssm.observation.load_state_dict(torch.load(os.path.join(saved_param_dir, "obs_model.pth")))
-        self.rssm.reward.load_state_dict(torch.load(os.path.join(saved_param_dir, "reward_model.pth")))
-        self.value_model.load_state_dict(torch.load(os.path.join(saved_param_dir, "value_model.pth")))
-        self.action_model.load_state_dict(torch.load(os.path.join(saved_param_dir, "action_model.pth")))
+    def test(self, param_dir, episodes):
+        self.encoder.load_state_dict(torch.load(os.path.join(param_dir, "encoder.pth")))
+        self.rssm.transition.load_state_dict(torch.load(os.path.join(param_dir, "rssm.pth")))
+        self.rssm.observation.load_state_dict(torch.load(os.path.join(param_dir, "obs_model.pth")))
+        self.rssm.reward.load_state_dict(torch.load(os.path.join(param_dir, "reward_model.pth")))
+        self.value_model.load_state_dict(torch.load(os.path.join(param_dir, "value_model.pth")))
+        self.action_model.load_state_dict(torch.load(os.path.join(param_dir, "action_model.pth")))
         policy = Agent(self.encoder, self.rssm.transition, self.action_model)
         epi_total_reward = 0
         for i in range(episodes):
@@ -453,10 +454,38 @@ class Trainer:
 
 
 if __name__ == "__main__":
-    if len(sys.argv) > 1:
-        configuration_file = sys.argv[1]
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--test", action='store_true')
+    parser.add_argument("--param_dir")
+    parser.add_argument("--episodes", type=int)
+    parser.add_argument("--task_code", default="01-04-01")
+    args = parser.parse_args()
+    tasks_folder = "dreamer/tasks"
+    if args.test:
+        configuration_file = os.path.join(tasks_folder, args.task_code + ".yaml")
+        aai_env = AnimalAIEnvironment(
+        seed=123,
+        file_name="env/AnimalAI.x86_64",
+        arenas_configurations=configuration_file,
+        play=False,
+        base_port=5000,
+        inference=False,
+        useCamera=True,
+        resolution=64,
+        useRayCasts=False,
+        no_graphics=True,
+        # raysPerSide=1,
+        # rayMaxDegrees = 30,
+        )
+        env = UnityToGymWrapper(
+            aai_env, uint8_visual=True, allow_multiple_obs=False, flatten_branched=True
+        )
+        env = OneHotAction(MaxAndSkipEnv(env))
+        device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
+        trainer = Trainer(env, device)
+        trainer.test(args.param_dir, args.episodes)
+
     else:
-        tasks_folder = "dreamer/tasks"
         configuration_files = os.listdir(tasks_folder)
         configuration_file_paths = []
         for file_name in configuration_files:
